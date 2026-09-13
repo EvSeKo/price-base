@@ -2,20 +2,19 @@ import asyncpg
 from typing import Optional, Any
 from datetime import datetime
 
+
 async def get_or_create_user(pool: asyncpg.Pool, telegram_id: int, full_name: str, username: str) -> int:
     """Возвращает ID пользователя, создавая его, если он не существует."""
     async with pool.acquire() as conn:
-        # Проверяем, есть ли пользователь
-        row = await conn.fetchrow("SELECT a_user_id FROM main.get_user_id($1, $2, $3)", telegram_id, full_name, username)
+        row = await conn.fetchrow(
+            "SELECT a_user_id FROM main.get_user_id($1, $2, $3)",
+            telegram_id, full_name, username,
+        )
         if row:
             return row['a_user_id']
 
 
-async def set_price_date(
-    pool,
-    tg_id: int,
-    price_date,           # datetime.date | None
-) -> str | None:
+async def set_price_date(pool, tg_id: int, price_date) -> str | None:
     """
     Сохраняет дату для заполнения price_date.
     price_date=None сбрасывает в текущую дату.
@@ -24,7 +23,7 @@ async def set_price_date(
     async with pool.acquire() as conn:
         result = await conn.fetchval(
             "SELECT main.set_price_date($1, $2)",
-            tg_id, price_date
+            tg_id, price_date,
         )
         return result
 
@@ -35,7 +34,7 @@ async def get_default_shop(pool, user_id: int):
         row = await conn.fetchrow(
             "SELECT a_shop_name, a_price_date, a_err_msg "
             "FROM main.get_default_shop($1)",
-            user_id
+            user_id,
         )
         if row:
             return row['a_shop_name'], row['a_price_date'], row['a_err_msg']
@@ -46,16 +45,15 @@ async def add_shop(
     pool: asyncpg.Pool,
     shop_name: str,
     shop_address: str,
-    telegram_id: int
+    telegram_id: int,
 ) -> tuple[int | None, str | None]:
     """Добавляет новый магазин."""
     async with pool.acquire() as conn:
-        # Выполняем SELECT * FROM upsert_shop(...)
         row = await conn.fetchrow(
             "SELECT * FROM main.upsert_shop($1, $2, $3)",
             shop_name.strip(),
             shop_address.strip(),
-            telegram_id
+            telegram_id,
         )
         if row:
             return row['a_shop_id'], row['a_err_msg']
@@ -67,19 +65,22 @@ async def call_upsert_product(
     product_name: str,
     unit: str,
     qty: float,
-    tg_id: int
+    tg_id: int,
+    product_id: int | None = None,
 ) -> tuple[int | None, str | None]:
     """
-    Вызывает хранимую функцию upsert_product.
+    Вызывает хранимую функцию main.upsert_product.
+    Если product_id=None — добавление, иначе — обновление существующего.
     Возвращает (product_id, error_message).
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM main.upsert_product($1, $2, $3, $4)",
+            "SELECT * FROM main.upsert_product($1, $2, $3, $4, $5)",
             product_name.strip(),
             unit.strip(),
             qty,
-            tg_id
+            tg_id,
+            product_id,
         )
         if row:
             return row['a_product_id'], row['a_err_msg']
@@ -89,53 +90,98 @@ async def call_upsert_product(
 async def get_shop_names(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     """Возвращает список уникальных названий сетей."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT a_shop_id as shop_id, a_shop_name as shop_name FROM main.get_shop_names()")
-        return [{'shop_id': row['shop_id'], 'shop_name': row['shop_name']} for row in rows]
+        rows = await conn.fetch(
+            "SELECT a_shop_id AS shop_id, a_shop_name AS shop_name "
+            "FROM main.get_shop_names()"
+        )
+        return [
+            {'shop_id': row['shop_id'], 'shop_name': row['shop_name']}
+            for row in rows
+        ]
+
 
 async def get_shop_addresses(pool: asyncpg.Pool, shop_id: int) -> list[dict[str, Any]]:
     """Возвращает список адресов для указанной сети (id и address)."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT a_address_id as address_id, a_address_name as address_name FROM main.get_shop_addresses($1)", shop_id)
-        return [{'address_id': row['address_id'], 'address_name': row['address_name']} for row in rows]
+        rows = await conn.fetch(
+            "SELECT a_address_id AS address_id, a_address_name AS address_name "
+            "FROM main.get_shop_addresses($1)",
+            shop_id,
+        )
+        return [
+            {'address_id': row['address_id'], 'address_name': row['address_name']}
+            for row in rows
+        ]
+
 
 async def set_default_shop(pool: asyncpg.Pool, tg_id: int, address_id: int) -> str:
-    """
-    Сохраняет выбранный магазин для пользователя.
-    Возвращает пустую строку или текст ошибки.
-    """
+    """Сохраняет выбранный магазин для пользователя. Возвращает '' или текст ошибки."""
     async with pool.acquire() as conn:
-        result = await conn.fetchval("SELECT main.set_default_shop($1, $2)", tg_id, address_id)
+        result = await conn.fetchval(
+            "SELECT main.set_default_shop($1, $2)",
+            tg_id, address_id,
+        )
         return result
 
 
 async def call_search_products(pool, search_text: str) -> list[dict]:
-    """Поиск товаров по строке с префиксами."""
+    """
+    Поиск товаров по строке с префиксами.
+    Возвращает product_id, product_name, product_qty, product_unit.
+    """
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT a_product_id as product_id, a_product_name as product_name FROM main.get_products_byname($1)", search_text)
-        return [{"product_id": row["product_id"], "product_name": row["product_name"]} for row in rows]
+        rows = await conn.fetch(
+            "SELECT a_product_id   AS product_id, "
+            "       a_product_name AS product_name, "
+            "       a_qty          AS product_qty, "
+            "       a_unit_name    AS product_unit "
+            "FROM main.get_products_byname($1)",
+            search_text,
+        )
+        return [
+            {
+                "product_id":   row["product_id"],
+                "product_name": row["product_name"],
+                "product_qty":  row["product_qty"],
+                "product_unit": row["product_unit"],
+            }
+            for row in rows
+        ]
+
 
 async def call_get_product_prices(pool, product_id: int) -> list[dict]:
     """Получение цен с цветовыми метками."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT a_shop_name as shop_name, a_price as price, a_price_date as price_date, a_color_name as color_name FROM main.get_product_prices($1)", product_id)
-        return [{
-            "shop_name": row["shop_name"],
-            "price": row["price"],
-            "price_date": row["price_date"],
-            "color_name": row["color_name"]
-        } for row in rows]
+        rows = await conn.fetch(
+            "SELECT a_shop_name  AS shop_name, "
+            "       a_price      AS price, "
+            "       a_price_date AS price_date, "
+            "       a_color_name AS color_name "
+            "FROM main.get_product_prices($1)",
+            product_id,
+        )
+        return [
+            {
+                "shop_name":  row["shop_name"],
+                "price":      row["price"],
+                "price_date": row["price_date"],
+                "color_name": row["color_name"],
+            }
+            for row in rows
+        ]
+
 
 async def call_add_price_by_product(
     pool,
     product_id: int,
     price: float,
-    tg_id: int
+    tg_id: int,
 ) -> tuple[int | None, str | None]:
     """Добавляет цену для продукта (по умолчанию магазин)."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM main.put_price_by_product($1, $2, $3)",
-            product_id, price, tg_id
+            product_id, price, tg_id,
         )
         if row:
             return row["a_shop_id"], row["a_err_msg"]
@@ -145,7 +191,7 @@ async def call_add_price_by_product(
 async def call_get_prices_report(
     pool,
     tg_id: int,
-    search_text: str | None = None
+    search_text: str | None = None,
 ) -> tuple[str | None, str | None]:
     """
     Вызывает хранимую функцию get_prices_report.
@@ -155,7 +201,7 @@ async def call_get_prices_report(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT a_html, a_err_msg FROM main.get_prices_report($1, $2)",
-            tg_id, search_text
+            tg_id, search_text,
         )
         if row:
             return row['a_html'], row['a_err_msg']
