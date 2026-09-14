@@ -221,7 +221,7 @@ ALTER FUNCTION main.get_product_prices(p_product_id bigint) OWNER TO supusr;
 -- Name: get_products_byname(text); Type: FUNCTION; Schema: main; Owner: supusr
 --
 
-CREATE FUNCTION main.get_products_byname(p_search_txt text) RETURNS TABLE(a_product_id bigint, a_product_name text, a_err_msg text)
+CREATE FUNCTION main.get_products_byname(p_search_txt text) RETURNS TABLE(a_product_id bigint, a_product_name text, a_qty numeric, a_unit_name text, a_err_msg text)
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 DECLARE
@@ -230,9 +230,11 @@ DECLARE
 BEGIN
 
 	RETURN QUERY
-		SELECT product_id, product_name, null::TEXT
-		from main.products
-		where to_tsvector('multilingual', product_name)
+		select p.product_id, p.product_name, p.qty, u.unit_name, null::TEXT
+		from main.products p
+		inner join main.units u
+			on u.unit_id = p.unit_id
+		where to_tsvector('multilingual', p.product_name)
    				@@ to_tsquery('multilingual', p_search_txt)
 		  or p_search_txt is null
 		order by product_name;
@@ -555,10 +557,10 @@ $$;
 ALTER FUNCTION main.update_updated_at_column() OWNER TO supusr;
 
 --
--- Name: upsert_product(text, text, numeric, bigint); Type: FUNCTION; Schema: main; Owner: supusr
+-- Name: upsert_product(text, text, numeric, bigint, bigint); Type: FUNCTION; Schema: main; Owner: supusr
 --
 
-CREATE FUNCTION main.upsert_product(p_product_name text, p_unit_name text, p_qty numeric, p_telegram_id bigint) RETURNS TABLE(a_product_id bigint, a_err_msg text)
+CREATE FUNCTION main.upsert_product(p_product_name text, p_unit_name text, p_qty numeric, p_telegram_id bigint, p_product_id bigint) RETURNS TABLE(a_product_id bigint, a_err_msg text)
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 DECLARE
@@ -589,15 +591,25 @@ BEGIN
 		returning unit_id into v_unit_id;
 	end if;
 
-	select product_id
-	into v_product_id
-	from main.products
-	where lower(product_name) = lower(p_product_name);
-
-	if v_product_id is null then
-		insert into main.products (product_name, unit_id, qty, created_by, updated_by)
-		select p_product_name, v_unit_id, p_qty, v_user_id, v_user_id
-		returning product_id into v_product_id;
+	if p_product_id is null then
+		select product_id
+		into v_product_id
+		from main.products
+		where lower(product_name) = lower(p_product_name);
+	
+		if v_product_id is null then
+			insert into main.products (product_name, unit_id, qty, created_by, updated_by)
+			select p_product_name, v_unit_id, p_qty, v_user_id, v_user_id
+			returning product_id into v_product_id;
+		end if;
+	else
+		update main.products
+		set product_name = p_product_name,
+			unit_id = v_unit_id,
+			qty = p_qty,
+			updated_by = v_user_id
+		where product_id = p_product_id
+		  and md5(row(product_name, unit_id, qty)::text) != md5(row(p_product_name, v_unit_id, p_qty)::text);
 	end if;
 
     RETURN QUERY SELECT v_product_id, NULL::TEXT;
@@ -609,7 +621,7 @@ END;
 $$;
 
 
-ALTER FUNCTION main.upsert_product(p_product_name text, p_unit_name text, p_qty numeric, p_telegram_id bigint) OWNER TO supusr;
+ALTER FUNCTION main.upsert_product(p_product_name text, p_unit_name text, p_qty numeric, p_telegram_id bigint, p_product_id bigint) OWNER TO supusr;
 
 --
 -- Name: upsert_shop(text, text, bigint); Type: FUNCTION; Schema: main; Owner: supusr
