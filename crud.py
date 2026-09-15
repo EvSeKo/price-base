@@ -46,14 +46,19 @@ async def add_shop(
     shop_name: str,
     shop_address: str,
     telegram_id: int,
+    address_id: int | None = None,
 ) -> tuple[int | None, str | None]:
-    """Добавляет новый магазин."""
+    """
+    Добавляет (address_id=None) или изменяет (address_id задан) магазин.
+    Возвращает (shop_id, error_message).
+    """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM main.upsert_shop($1, $2, $3)",
+            "SELECT * FROM main.upsert_shop($1, $2, $3, $4)",
             shop_name.strip(),
             shop_address.strip(),
             telegram_id,
+            address_id,
         )
         if row:
             return row['a_shop_id'], row['a_err_msg']

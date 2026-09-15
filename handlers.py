@@ -1,6 +1,6 @@
 import re
 from typing import Union
-from datetime import datetime, date
+from datetime import datetime
 
 from aiogram import Router, types, F
 from aiogram.filters import Command
@@ -24,14 +24,9 @@ router = Router()
 
 
 # ------------------- Состояния -------------------
-class AddPriceStates(StatesGroup):
-    waiting_for_product = State()
-    waiting_for_price = State()
-
-
 class AddProductStates(StatesGroup):
     waiting_for_product_name = State()
-    waiting_for_unit = State()
+    waiting_for_unit         = State()
 
 
 class EditProductStates(StatesGroup):
@@ -79,7 +74,7 @@ def submenu_keyboard(menu_name: str) -> InlineKeyboardMarkup:
         buttons = [
             [InlineKeyboardButton(text="🔍 Выбрать",  callback_data="action|shop_choose")],
             [InlineKeyboardButton(text="➕ Добавить", callback_data="action|shop_add")],
-            [InlineKeyboardButton(text="✏️ Изменить", callback_data="action|dummy")],
+            [InlineKeyboardButton(text="✏️ Изменить", callback_data="action|shop_edit")],
             [InlineKeyboardButton(text="🔙 Назад",    callback_data="menu|main")],
         ]
     elif menu_name == "products":
@@ -91,11 +86,11 @@ def submenu_keyboard(menu_name: str) -> InlineKeyboardMarkup:
         ]
     elif menu_name == "params":
         buttons = [
-            [InlineKeyboardButton(text="📍 Выбрать локацию",  callback_data="action|dummy")],
-            [InlineKeyboardButton(text="📋 Просмотр",         callback_data="action|my_shop")],
-            [InlineKeyboardButton(text="🏪 Выбрать магазин",  callback_data="action|shop_choose")],
-            [InlineKeyboardButton(text="📅 Установить дату",  callback_data="action|set_date")],
-            [InlineKeyboardButton(text="🔙 Назад",            callback_data="menu|main")],
+            [InlineKeyboardButton(text="📍 Выбрать локацию", callback_data="action|dummy")],
+            [InlineKeyboardButton(text="📋 Просмотр",        callback_data="action|my_shop")],
+            [InlineKeyboardButton(text="🏪 Выбрать магазин", callback_data="action|shop_choose")],
+            [InlineKeyboardButton(text="📅 Установить дату", callback_data="action|set_date")],
+            [InlineKeyboardButton(text="🔙 Назад",           callback_data="menu|main")],
         ]
     else:
         buttons = []
@@ -111,7 +106,6 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
 
 
 def product_buttons(products: list[dict]) -> InlineKeyboardMarkup:
-    """Кнопки выбора товара + отмена. Работает и для добавления, и для изменения, и для /price."""
     buttons = [
         [InlineKeyboardButton(
             text=p['product_name'],
@@ -146,6 +140,34 @@ def date_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def shop_names_keyboard(shop_names: list[dict], callback_prefix: str) -> InlineKeyboardMarkup:
+    """Кнопки выбора сети. Один и тот же виджет для выбора и для изменения (DRY)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=shop['shop_name'],
+            callback_data=f"{callback_prefix}|{shop['shop_id']}",
+        )]
+        for shop in shop_names
+    ])
+
+
+def addresses_keyboard(
+    addresses: list[dict],
+    callback_prefix: str,
+    back_data: str,
+) -> InlineKeyboardMarkup:
+    """Кнопки выбора адреса + кнопка «Назад»."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=addr['address_name'],
+            callback_data=f"{callback_prefix}|{addr['address_id']}",
+        )]
+        for addr in addresses
+    ] + [
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=back_data)]
+    ])
+
+
 # ------------------- Хелперы -------------------
 async def safe_edit(
     callback: CallbackQuery,
@@ -169,10 +191,7 @@ async def safe_edit(
 
 
 def parse_qty_unit(text: str) -> tuple[float | None, str | None, str | None]:
-    """
-    Парсит строку вида '1 кг'.
-    Возвращает (qty, unit, err_msg) — ровно одно из qty/err_msg заполнено.
-    """
+    """Парсит строку вида '1 кг'. Возвращает (qty, unit, err_msg)."""
     args = (text or "").strip().split()
     if len(args) != 2:
         return None, None, (
@@ -198,10 +217,7 @@ def fmt_qty(qty) -> str:
 
 
 def format_product_info(product: dict) -> str:
-    """
-    Единый формат вывода данных товара.
-    product: dict с ключами product_name, product_qty, product_unit.
-    """
+    """Единый формат вывода данных товара."""
     return (
         f"📦 <b>{product.get('product_name', '—')}</b>\n"
         f"Кол-во: <b>{fmt_qty(product.get('product_qty'))}</b> "
@@ -217,6 +233,53 @@ def format_shop_info(shop_name, price_date, err_msg) -> str:
         f"🏪 Магазин по умолчанию: <b>{shop_name or '—'}</b>\n"
         f"📅 Дата ввода цен: <b>{date_str}</b>"
     )
+
+
+async def display_shop_names(
+    event: Union[types.Message, types.CallbackQuery],
+    callback_prefix: str,
+    title: str = "🏪 Выберите сеть магазинов:",
+) -> None:
+    """Общий вывод списка сетей магазинов (используется и для выбора, и для изменения)."""
+    pool = await get_pool()
+    shop_names = await crud.get_shop_names(pool)
+    is_callback = isinstance(event, types.CallbackQuery)
+
+    if not shop_names:
+        text_empty = "❌ Нет доступных магазинов. Сначала добавьте их через меню."
+        if is_callback:
+            await safe_edit(event, text_empty, reply_markup=main_menu_keyboard())
+            await event.answer()
+        else:
+            await event.answer(text_empty, reply_markup=main_menu_keyboard())
+        return
+
+    keyboard = shop_names_keyboard(shop_names, callback_prefix)
+    if is_callback:
+        await safe_edit(event, title, reply_markup=keyboard)
+        await event.answer()
+    else:
+        await event.answer(title, reply_markup=keyboard)
+
+
+async def display_shop_addresses(
+    callback: CallbackQuery,
+    shop_id: int,
+    callback_prefix: str,
+    back_data: str,
+    title: str = "📍 Адреса магазинов:",
+) -> None:
+    """Общий вывод адресов выбранной сети."""
+    pool = await get_pool()
+    addresses = await crud.get_shop_addresses(pool, shop_id)
+
+    if not addresses:
+        await callback.answer("Для этой сети нет адресов.", show_alert=True)
+        return
+
+    keyboard = addresses_keyboard(addresses, callback_prefix, back_data)
+    await safe_edit(callback, title, reply_markup=keyboard)
+    await callback.answer()
 
 
 # ------------------- Команда /start -------------------
@@ -272,12 +335,21 @@ async def action_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
 
     elif action == "shop_choose":
-        await show_shop_names(callback)
+        await display_shop_names(callback, "shop_select")
 
     elif action == "shop_add":
+        # Готовим чистые данные: edit_address_id не должно оставаться от прошлого раза
+        await state.update_data(edit_address_id=None)
         await state.set_state(AddShopStates.waiting_for_shop_name)
         await safe_edit(callback, "🏪 Введите название магазина:", reply_markup=cancel_keyboard())
         await callback.answer()
+
+    elif action == "shop_edit":
+        await display_shop_names(
+            callback,
+            "edit_shop_select",
+            "🏪 Выберите сеть магазинов для изменения:",
+        )
 
     elif action == "product_add":
         await state.set_state(AddProductStates.waiting_for_product_name)
@@ -334,9 +406,10 @@ async def cancel_add(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ------------------- Магазин: добавление -------------------
+# ------------------- Магазин: добавление / изменение -------------------
 @router.message(Command("add_shop"))
 async def cmd_add_shop(message: Message, state: FSMContext):
+    await state.update_data(edit_address_id=None)
     await state.set_state(AddShopStates.waiting_for_shop_name)
     await message.answer("🏪 Введите название магазина:", reply_markup=cancel_keyboard())
 
@@ -345,33 +418,49 @@ async def cmd_add_shop(message: Message, state: FSMContext):
 async def process_shop_name(message: Message, state: FSMContext):
     shop_name = message.text.strip()
     if not shop_name:
-        await message.answer("❌ Название не может быть пустым. Попробуйте снова:",
-                             reply_markup=cancel_keyboard())
+        await message.answer(
+            "❌ Название не может быть пустым. Попробуйте снова:",
+            reply_markup=cancel_keyboard(),
+        )
         return
+
     await state.update_data(shop_name=shop_name)
     await state.set_state(AddShopStates.waiting_for_shop_address)
-    await message.answer("📍 Введите адрес магазина:", reply_markup=cancel_keyboard())
+
+    data = await state.get_data()
+    prompt = "📍 Введите новый адрес:" if data.get("edit_address_id") else "📍 Введите адрес магазина:"
+    await message.answer(prompt, reply_markup=cancel_keyboard())
 
 
 @router.message(AddShopStates.waiting_for_shop_address)
 async def process_shop_address(message: Message, state: FSMContext):
     shop_address = message.text.strip()
     if not shop_address:
-        await message.answer("❌ Адрес не может быть пустым. Попробуйте снова:",
-                             reply_markup=cancel_keyboard())
-        return
-    data = await state.get_data()
-    shop_name = data.get('shop_name')
-    pool = await get_pool()
-    shop_id, err_msg = await crud.add_shop(pool, shop_name, shop_address, message.from_user.id)
-    if err_msg:
-        await message.answer(f"❌ Ошибка: {err_msg}")
-    else:
         await message.answer(
-            f"✅ Магазин «{shop_name}» сохранён (ID: {shop_id}).\nАдрес: {shop_address}"
+            "❌ Адрес не может быть пустым. Попробуйте снова:",
+            reply_markup=cancel_keyboard(),
         )
+        return
+
+    data = await state.get_data()
+    shop_name = data.get("shop_name")
+    address_id = data.get("edit_address_id")
+
+    pool = await get_pool()
+    result_id, err_msg = await crud.add_shop(
+        pool, shop_name, shop_address, message.from_user.id, address_id=address_id,
+    )
     await state.clear()
-    await message.answer("🏠 Главное меню:", reply_markup=main_menu_keyboard())
+
+    if err_msg:
+        await message.answer(f"❌ Ошибка: {err_msg}", reply_markup=main_menu_keyboard())
+    else:
+        verb = "обновлён" if address_id else "сохранён"
+        await message.answer(
+            f"✅ Магазин «{shop_name}» {verb} (ID: {result_id}).\n"
+            f"Адрес: {shop_address}",
+            reply_markup=main_menu_keyboard(),
+        )
 
 
 # ------------------- Товар: добавление -------------------
@@ -496,8 +585,8 @@ async def edit_product_new_unit_qty(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    product   = data.get("product") or {}
-    new_name  = data.get("new_name")
+    product    = data.get("product") or {}
+    new_name   = data.get("new_name")
     product_id = product.get("product_id")
 
     if not product_id or not new_name:
@@ -525,61 +614,21 @@ async def edit_product_new_unit_qty(message: Message, state: FSMContext):
         )
 
 
-# ------------------- Выбор магазина -------------------
+# ------------------- Выбор магазина (обычный поток) -------------------
 @router.message(Command("choose_shop"))
 @router.callback_query(F.data == "back_to_shop_names")
 async def show_shop_names(event: Union[types.Message, types.CallbackQuery]):
-    pool = await get_pool()
-    shop_names = await crud.get_shop_names(pool)
-
-    is_callback = isinstance(event, types.CallbackQuery)
-
-    if not shop_names:
-        text_empty = "❌ Нет доступных магазинов. Сначала добавьте их через /add_shop."
-        if is_callback:
-            await safe_edit(event, text_empty, reply_markup=main_menu_keyboard())
-            await event.answer()
-        else:
-            await event.answer(text_empty, reply_markup=main_menu_keyboard())
-        return
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=shop['shop_name'],
-            callback_data=f"shop_select|{shop['shop_id']}",
-        )]
-        for shop in shop_names
-    ])
-    text_msg = "🏪 Выберите сеть магазинов:"
-
-    if is_callback:
-        await safe_edit(event, text_msg, reply_markup=keyboard)
-        await event.answer()
-    else:
-        await event.answer(text_msg, reply_markup=keyboard)
+    await display_shop_names(event, "shop_select")
 
 
 @router.callback_query(F.data.startswith("shop_select|"))
 async def process_shop_select(callback: CallbackQuery):
     shop_id = int(callback.data.split("|", 1)[1])
-    pool = await get_pool()
-    addresses = await crud.get_shop_addresses(pool, shop_id)
-
-    if not addresses:
-        await callback.answer("Для этой сети нет адресов.", show_alert=True)
-        return
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=addr['address_name'],
-            callback_data=f"address_select|{addr['address_id']}",
-        )]
-        for addr in addresses
-    ] + [
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_shop_names")]
-    ])
-    await safe_edit(callback, "📍 Адреса магазинов:", reply_markup=keyboard)
-    await callback.answer()
+    await display_shop_addresses(
+        callback, shop_id,
+        callback_prefix="address_select",
+        back_data="back_to_shop_names",
+    )
 
 
 @router.callback_query(F.data.startswith("address_select|"))
@@ -598,6 +647,43 @@ async def process_address_select(callback: CallbackQuery):
     await callback.answer()
 
 
+# ------------------- Изменение магазина (поток с edit-префиксами) -------------------
+@router.callback_query(F.data == "edit_back_to_shop_names")
+async def edit_back_to_shop_names(callback: CallbackQuery):
+    await display_shop_names(
+        callback,
+        "edit_shop_select",
+        "🏪 Выберите сеть магазинов для изменения:",
+    )
+
+
+@router.callback_query(F.data.startswith("edit_shop_select|"))
+async def edit_shop_select(callback: CallbackQuery):
+    shop_id = int(callback.data.split("|", 1)[1])
+    await display_shop_addresses(
+        callback, shop_id,
+        callback_prefix="edit_address_select",
+        back_data="edit_back_to_shop_names",
+        title="📍 Выберите магазин для изменения:",
+    )
+
+
+@router.callback_query(F.data.startswith("edit_address_select|"))
+async def edit_address_select(callback: CallbackQuery, state: FSMContext):
+    address_id = int(callback.data.split("|", 1)[1])
+
+    # Запоминаем выбранный адрес и переходим в общий диалог ввода
+    await state.update_data(edit_address_id=address_id)
+    await state.set_state(AddShopStates.waiting_for_shop_name)
+
+    await safe_edit(
+        callback,
+        "🏪 Введите новое название сети магазинов:",
+        reply_markup=cancel_keyboard(),
+    )
+    await callback.answer()
+
+
 # ------------------- Команда /my_shop -------------------
 @router.message(Command("my_shop"))
 async def cmd_my_shop(message: types.Message):
@@ -609,7 +695,7 @@ async def cmd_my_shop(message: types.Message):
     )
 
 
-# ------------------- Команда /price (интерактивный) -------------------
+# ------------------- Команда /price -------------------
 @router.message(Command("price"))
 async def cmd_price(message: Message, state: FSMContext):
     await state.set_state(PriceStates.waiting_for_search_text)
@@ -651,7 +737,6 @@ async def process_product_selection(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Товар не найден", show_alert=True)
         return
 
-    # Кешируем все 4 поля товара — далее в БД за ними не ходим
     await state.update_data(
         product_id   = product_id,
         product_name = product["product_name"],
@@ -661,7 +746,6 @@ async def process_product_selection(callback: CallbackQuery, state: FSMContext):
 
     pool = await get_pool()
     prices = await crud.call_get_product_prices(pool, product_id)
-
     header = format_product_info(product) + "\n\n"
 
     if not prices:
@@ -692,7 +776,6 @@ async def process_product_selection(callback: CallbackQuery, state: FSMContext):
     lines.append("</pre>")
 
     text = header + "📊 <b>Цены на товар</b>:\n\n" + "\n".join(lines)
-
     await callback.message.edit_text(
         text,
         parse_mode=ParseMode.HTML,

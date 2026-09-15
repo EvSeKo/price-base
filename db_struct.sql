@@ -624,10 +624,10 @@ $$;
 ALTER FUNCTION main.upsert_product(p_product_name text, p_unit_name text, p_qty numeric, p_telegram_id bigint, p_product_id bigint) OWNER TO supusr;
 
 --
--- Name: upsert_shop(text, text, bigint); Type: FUNCTION; Schema: main; Owner: supusr
+-- Name: upsert_shop(text, text, bigint, bigint); Type: FUNCTION; Schema: main; Owner: supusr
 --
 
-CREATE FUNCTION main.upsert_shop(p_shop_name text, p_address text, p_telegram_id bigint) RETURNS TABLE(a_shop_id bigint, a_err_msg text)
+CREATE FUNCTION main.upsert_shop(p_shop_name text, p_address text, p_telegram_id bigint, p_address_id bigint) RETURNS TABLE(a_shop_id bigint, a_err_msg text)
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 DECLARE
@@ -647,24 +647,40 @@ BEGIN
         RETURN;
     END IF;
 
-	INSERT INTO main.shops (shop_name, created_by, updated_by)
-	select p_shop_name, v_user_id, v_user_id
-	where not exists (select 1 from main.shops x where lower(x.shop_name) = lower(p_shop_name))
-	ON CONFLICT (lower(shop_name)) DO NOTHING
-	RETURNING shop_id INTO v_shop_id;
+	if p_address_id is null then
+		INSERT INTO main.shops (shop_name, created_by, updated_by)
+		select p_shop_name, v_user_id, v_user_id
+		where not exists (select 1 from main.shops x where lower(x.shop_name) = lower(p_shop_name))
+		ON CONFLICT (lower(shop_name)) DO NOTHING
+		RETURNING shop_id INTO v_shop_id;
+	
+		if v_shop_id is null then
+			select shop_id
+			into v_shop_id
+			from main.shops
+			where lower(shop_name) = lower(p_shop_name);
+		end if;
+	
+		INSERT INTO main.addresses (shop_id, address_name, created_by, updated_by)
+		select v_shop_id, p_address, v_user_id, v_user_id
+		where not exists (select 1 from main.addresses x where x.shop_id = v_shop_id and lower(x.address_name) = lower(p_address))
+		ON CONFLICT (shop_id, lower(address_name)) DO NOTHING
+		RETURNING address_id INTO v_address_id;
+	else
+		update main.shops s
+		set shop_name = p_shop_name,
+			updated_by = v_user_id
+		from main.addresses a
+		where a.address_id = p_address_id
+		  and s.shop_id = a.shop_id
+		  and md5(row(s.shop_name)::text) != md5(row(p_shop_name)::text);
 
-	if v_shop_id is null then
-		select shop_id
-		into v_shop_id
-		from main.shops
-		where lower(shop_name) = lower(p_shop_name);
+		update main.addresses a
+		set address_name = p_address,
+			updated_by = v_user_id
+		where a.address_id = p_address_id
+		  and md5(row(a.address_name)::text) != md5(row(p_address)::text);
 	end if;
-
-	INSERT INTO main.addresses (shop_id, address_name, created_by, updated_by)
-	select v_shop_id, p_address, v_user_id, v_user_id
-	where not exists (select 1 from main.addresses x where x.shop_id = v_shop_id and lower(x.address_name) = lower(p_address))
-	ON CONFLICT (shop_id, lower(address_name)) DO NOTHING
-	RETURNING address_id INTO v_address_id;
 
     RETURN QUERY SELECT v_address_id, NULL::TEXT;
 EXCEPTION
@@ -675,7 +691,7 @@ END;
 $$;
 
 
-ALTER FUNCTION main.upsert_shop(p_shop_name text, p_address text, p_telegram_id bigint) OWNER TO supusr;
+ALTER FUNCTION main.upsert_shop(p_shop_name text, p_address text, p_telegram_id bigint, p_address_id bigint) OWNER TO supusr;
 
 --
 -- Name: multilingual; Type: TEXT SEARCH CONFIGURATION; Schema: public; Owner: supusr
